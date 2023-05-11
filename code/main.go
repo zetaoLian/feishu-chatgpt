@@ -2,20 +2,18 @@ package main
 
 import (
 	"context"
-	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 	"log"
+
 	"start-feishubot/handlers"
 	"start-feishubot/initialization"
 	"start-feishubot/services/openai"
 
-	larkcard "github.com/larksuite/oapi-sdk-go/v3/card"
-
 	"github.com/gin-gonic/gin"
-	"github.com/spf13/pflag"
-
 	sdkginext "github.com/larksuite/oapi-sdk-gin"
-
+	larkcard "github.com/larksuite/oapi-sdk-go/v3/card"
 	"github.com/larksuite/oapi-sdk-go/v3/event/dispatcher"
+	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
+	"github.com/spf13/pflag"
 )
 
 var (
@@ -23,6 +21,7 @@ var (
 )
 
 func main() {
+	initialization.InitRoleList()
 	pflag.Parse()
 	config := initialization.LoadConfig(*cfg)
 	initialization.LoadLarkClient(*config)
@@ -52,9 +51,7 @@ func main() {
 		sdkginext.NewCardActionHandlerFunc(
 			cardHandler))
 
-	err := initialization.StartServer(*config, r)
-	if err != nil {
+	if err := initialization.StartServer(*config, r); err != nil {
 		log.Fatalf("failed to start server: %v", err)
 	}
-
 }

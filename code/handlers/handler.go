@@ -2,15 +2,14 @@ package handlers
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"strings"
+
 	"start-feishubot/initialization"
 	"start-feishubot/services"
 	"start-feishubot/services/openai"
-	"strings"
 
 	larkcard "github.com/larksuite/oapi-sdk-go/v3/card"
-
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 )
 
@@ -31,129 +30,21 @@ type MessageHandler struct {
 	config       initialization.Config
 }
 
-func (m MessageHandler) cardHandler(_ context.Context,
+func (m MessageHandler) cardHandler(ctx context.Context,
 	cardAction *larkcard.CardAction) (interface{}, error) {
-	var cardMsg CardMsg
-	actionValue := cardAction.Action.Value
-	actionValueJson, _ := json.Marshal(actionValue)
-	json.Unmarshal(actionValueJson, &cardMsg)
-	//fmt.Println("cardMsg: ", cardMsg)
-	if cardMsg.Kind == ClearCardKind {
-		newCard, err, done := CommonProcessClearCache(cardMsg, m.sessionCache)
-		if done {
-			return newCard, err
-		}
-		return nil, nil
-	}
-	if cardMsg.Kind == PicResolutionKind {
-		CommonProcessPicResolution(cardMsg, cardAction, m.sessionCache)
-		return nil, nil
-	}
-	if cardMsg.Kind == PicTextMoreKind {
-		go func() {
-			m.CommonProcessPicMore(cardMsg)
-		}()
-	}
-	//if cardMsg.Kind == PicVarMoreKind {
-	//	//todo: 暂时不允许 以图搜图 模式下的 再来一张
-	//	go func() {
-	//		m.CommonProcessPicMore(cardMsg)
-	//	}()
-	//}
-	if cardMsg.Kind == PicModeChangeKind {
-		newCard, err, done := CommonProcessPicModeChange(cardMsg, m.sessionCache)
-		if done {
-			return newCard, err
-		}
-		return nil, nil
-
-	}
-	return nil, nil
-
+	messageHandler := NewCardHandler(m)
+	return messageHandler(ctx, cardAction)
 }
 
-func (m MessageHandler) CommonProcessPicMore(msg CardMsg) {
-	resolution := m.sessionCache.GetPicResolution(msg.SessionId)
-	//fmt.Println("resolution: ", resolution)
-	//fmt.Println("msg: ", msg)
-	question := msg.Value.(string)
-	bs64, _ := m.gpt.GenerateOneImage(question, resolution)
-	replayImageCardByBase64(context.Background(), bs64, &msg.MsgId,
-		&msg.SessionId, question)
-}
-
-func CommonProcessPicResolution(msg CardMsg,
-	cardAction *larkcard.CardAction,
-	cache services.SessionServiceCacheInterface) {
-	option := cardAction.Action.Option
-	//fmt.Println(larkcore.Prettify(msg))
-	cache.SetPicResolution(msg.SessionId, services.Resolution(option))
-	//send text
-	replyMsg(context.Background(), "已更新图片分辨率为"+option,
-		&msg.MsgId)
-}
-
-func CommonProcessClearCache(cardMsg CardMsg, session services.SessionServiceCacheInterface) (
-	interface{}, error, bool) {
-	if cardMsg.Value == "1" {
-		newCard, _ := newSendCard(
-			withHeader("️🆑 机器人提醒", larkcard.TemplateRed),
-			withMainMd("已删除此话题的上下文信息"),
-			withNote("我们可以开始一个全新的话题，继续找我聊天吧"),
-		)
-		session.Clear(cardMsg.SessionId)
-		return newCard, nil, true
-	}
-	if cardMsg.Value == "0" {
-		newCard, _ := newSendCard(
-			withHeader("️🆑 机器人提醒", larkcard.TemplateGreen),
-			withMainMd("依旧保留此话题的上下文信息"),
-			withNote("我们可以继续探讨这个话题,期待和您聊天。如果您有其他问题或者想要讨论的话题，请告诉我哦"),
-		)
-		return newCard, nil, true
-	}
-	return nil, nil, false
-}
-
-func CommonProcessPicModeChange(cardMsg CardMsg,
-	session services.SessionServiceCacheInterface) (
-	interface{}, error, bool) {
-	if cardMsg.Value == "1" {
-
-		sessionId := cardMsg.SessionId
-		session.Clear(sessionId)
-		session.SetMode(sessionId,
-			services.ModePicCreate)
-		session.SetPicResolution(sessionId,
-			services.Resolution256)
-
-		newCard, _ :=
-			newSendCard(
-				withHeader("🖼️ 已进入图片创作模式", larkcard.TemplateBlue),
-				withPicResolutionBtn(&sessionId),
-				withNote("提醒：回复文本或图片，让AI生成相关的图片。"))
-		return newCard, nil, true
-	}
-	if cardMsg.Value == "0" {
-		newCard, _ := newSendCard(
-			withHeader("️🎒 机器人提醒", larkcard.TemplateGreen),
-			withMainMd("依旧保留此话题的上下文信息"),
-			withNote("我们可以继续探讨这个话题,期待和您聊天。如果您有其他问题或者想要讨论的话题，请告诉我哦"),
-		)
-		return newCard, nil, true
-	}
-	return nil, nil, false
-}
 func judgeMsgType(event *larkim.P2MessageReceiveV1) (string, error) {
 	msgType := event.Event.Message.MessageType
 
 	switch *msgType {
-	case "text", "image", "audio":
+	case "text", "image", "audio", "post":
 		return *msgType, nil
 	default:
 		return "", fmt.Errorf("unknown message type: %v", *msgType)
 	}
-
 }
 
 func (m MessageHandler) msgReceivedHandler(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
@@ -185,7 +76,7 @@ func (m MessageHandler) msgReceivedHandler(ctx context.Context, event *larkim.P2
 		msgType:     msgType,
 		msgId:       msgId,
 		chatId:      chatId,
-		qParsed:     strings.Trim(parseContent(*content), " "),
+		qParsed:     strings.Trim(parseContent(*content, msgType), " "),
 		fileKey:     parseFileKey(*content),
 		imageKey:    parseImageKey(*content),
 		sessionId:   sessionId,
@@ -200,10 +91,13 @@ func (m MessageHandler) msgReceivedHandler(ctx context.Context, event *larkim.P2
 		&ProcessedUniqueAction{}, //避免重复处理
 		&ProcessMentionAction{},  //判断机器人是否应该被调用
 		&AudioAction{},           //语音处理
-		&PicAction{},             //图片处理
 		&EmptyAction{},           //空消息处理
 		&ClearAction{},           //清除消息处理
+		&PicAction{},             //图片处理
+		&AIModeAction{},          //模式切换处理
+		&RoleListAction{},        //角色列表处理
 		&HelpAction{},            //帮助处理
+		&BalanceAction{},         //余额处理
 		&RolePlayAction{},        //角色扮演处理
 		&MessageAction{},         //消息处理
 
@@ -230,4 +124,12 @@ func (m MessageHandler) judgeIfMentionMe(mention []*larkim.
 		return false
 	}
 	return *mention[0].Name == m.config.FeishuBotName
+}
+
+func AzureModeCheck(a *ActionInfo) bool {
+	if a.handler.config.AzureOn {
+		//sendMsg(*a.ctx, "Azure Openai 接口下，暂不支持此功能", a.info.chatId)
+		return false
+	}
+	return true
 }

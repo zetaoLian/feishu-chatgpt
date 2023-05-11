@@ -1,4 +1,4 @@
-FROM golang as golang
+FROM golang:1.18 as golang
 
 ENV GO111MODULE=on \
     CGO_ENABLED=1 \
@@ -15,5 +15,6 @@ WORKDIR /app
 
 RUN apk add --no-cache bash
 COPY --from=golang /build/feishu_chatgpt /app
+COPY --from=golang /build/role_list.yaml /app
 EXPOSE 9000
 ENTRYPOINT ["/app/feishu_chatgpt"]
